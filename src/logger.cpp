@@ -1,0 +1,182 @@
+/**
+ * @Author: Tenire
+ * @Date: 29 Nov 2024 01:40
+ * @Email: i@tenire.com
+ * @Description:
+ *                 _/_/_/_/_/                    _/
+ *                    _/      _/_/    _/_/_/        _/  _/_/    _/_/
+ *                   _/    _/_/_/_/  _/    _/  _/  _/_/      _/_/_/_/
+ *                  _/    _/        _/    _/  _/  _/        _/
+ *                 _/      _/_/_/  _/    _/  _/  _/          _/_/_/
+ *
+ */
+
+#include "logger.h"
+#include <filesystem>
+#include <sstream>
+#include <iomanip>
+#include <chrono>
+#include <vector>
+#include <algorithm>
+
+namespace maplog {
+
+Logger& Logger::instance() {
+    static Logger instance;
+    return instance;
+}
+
+void Logger::log(LogLevel level, const std::string& message) {
+    if (!initialized_) {
+        fprintf(stderr, "Logger not initialized\n");
+        return;
+    }
+
+    if (level < min_level_) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    try {
+        checkRotate();
+
+        std::stringstream ss;
+        ss << getCurrentTime() << " [" << getLevelString(level) 
+           << "] " << message << std::endl;
+
+        log_file_ << ss.str();
+        log_file_.flush();
+
+        if (console_output_ && level >= LogLevel::WARN) {
+            fprintf(stderr, "%s", ss.str().c_str());
+        }
+    }
+    catch (const std::exception& e) {
+        fprintf(stderr, "Failed to write log: %s\n", e.what());
+    }
+}
+
+void Logger::debug(const std::string& message) { log(LogLevel::DEBUG, message); }
+void Logger::info(const std::string& message) { log(LogLevel::INFO, message); }
+void Logger::warn(const std::string& message) { log(LogLevel::WARN, message); }
+void Logger::error(const std::string& message) { log(LogLevel::ERROR, message); }
+void Logger::fatal(const std::string& message) { log(LogLevel::FATAL, message); }
+
+std::string Logger::getCurrentTime() {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now.time_since_epoch()) %
+              1000;
+
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
+       << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    return ss.str();
+}
+
+std::string Logger::getCurrentDate() {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&time), "%Y%m%d");
+    return ss.str();
+}
+
+std::string Logger::getLevelString(LogLevel level) {
+    switch (level) {
+    case LogLevel::DEBUG: return "DEBUG";
+    case LogLevel::INFO:  return "INFO";
+    case LogLevel::WARN:  return "WARN";
+    case LogLevel::ERROR: return "ERROR";
+    case LogLevel::FATAL: return "FATAL";
+    default:             return "UNKNOWN";
+    }
+}
+
+void Logger::checkRotate() {
+    std::string current_date = getCurrentDate();
+    if (current_date != current_date_) {
+        rotateLog();
+        return;
+    }
+
+    if (log_file_.tellp() >= max_file_size_) {
+        rotateLog();
+    }
+}
+
+void Logger::rotateLog() {
+    log_file_.close();
+    current_date_ = getCurrentDate();
+    cleanOldLogs();
+    openLogFile();
+
+    if (!log_file_.is_open()) {
+        fprintf(stderr, "Failed to rotate log file: %s\n", current_log_file_.c_str());
+    }
+}
+
+void Logger::cleanOldLogs() {
+    try {
+        std::vector<std::string> log_files;
+
+        for (const auto& entry : std::filesystem::directory_iterator(log_dir_)) {
+            if (entry.path().extension() == ".log") {
+                log_files.push_back(entry.path().string());
+            }
+        }
+
+        std::sort(log_files.begin(), log_files.end(), std::greater<>());
+
+        for (size_t i = max_files_; i < log_files.size(); ++i) {
+            std::filesystem::remove(log_files[i]);
+        }
+    }
+    catch (const std::exception& e) {
+        fprintf(stderr, "Failed to clean old logs: %s\n", e.what());
+    }
+}
+
+void Logger::openLogFile() {
+    current_log_file_ = log_dir_ + "/" + file_prefix_ + "_" + current_date_ + ".log";
+    log_file_.open(current_log_file_, std::ios::app);
+}
+
+bool Logger::init(const std::string& log_dir, 
+                 const std::string& file_prefix,
+                 LogLevel level,
+                 bool console_output,
+                 size_t max_size,
+                 int max_files) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    try {
+        log_dir_ = log_dir;
+        file_prefix_ = file_prefix;
+        min_level_ = level;
+        console_output_ = console_output;
+        max_file_size_ = max_size;
+        max_files_ = max_files;
+
+        std::filesystem::create_directories(log_dir_);
+        current_date_ = getCurrentDate();
+        openLogFile();
+
+        if (!log_file_.is_open()) {
+            fprintf(stderr, "Failed to open log file: %s\n", current_log_file_.c_str());
+            return false;
+        }
+
+        initialized_ = true;
+        return true;
+    }
+    catch (const std::exception& e) {
+        fprintf(stderr, "Failed to initialize logger: %s\n", e.what());
+        return false;
+    }
+}
+
+} // namespace maplog 

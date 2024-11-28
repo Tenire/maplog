@@ -97,5 +97,4 @@ private:
 
 #define LOG(level) maplog::Logger::instance().setLevel(level); maplog::Logger::instance()
 #define LOG_IF(level, condition) \
-    if (condition) maplog::Logger::instance().setLevel(level); \
-    if (condition) maplog::Logger::instance()
+    (condition ? (maplog::Logger::instance().setLevel(level), maplog::Logger::instance()) : maplog::Logger::instance())

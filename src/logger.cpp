@@ -26,34 +26,116 @@ Logger& Logger::instance() {
     return instance;
 }
 
-void Logger::log(LogLevel level, const std::string& message) {
-    if (!initialized_) {
-        fprintf(stderr, "Logger not initialized\n");
-        return;
+Logger::Logger() {
+    running_ = true;
+}
+
+Logger::~Logger() {
+    stop();
+}
+
+void Logger::stop() {
+    running_ = false;
+    queue_cv_.notify_one();
+    if (logger_thread_.joinable()) {
+        logger_thread_.join();
     }
+}
 
-    if (level < min_level_) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-
+bool Logger::init(const std::string& log_dir, 
+                 const std::string& file_prefix,
+                 LogLevel level,
+                 bool console_output,
+                 size_t max_size,
+                 int max_files) {
     try {
-        checkRotate();
+        log_dir_ = log_dir;
+        file_prefix_ = file_prefix;
+        min_level_ = level;
+        console_output_ = console_output;
+        max_file_size_ = max_size;
+        max_files_ = max_files;
 
-        std::stringstream ss;
-        ss << getCurrentTime() << " [" << getLevelString(level) 
-           << "] " << message << std::endl;
+        std::filesystem::create_directories(log_dir_);
+        current_date_ = getCurrentDate();
+        openLogFile();
 
-        log_file_ << ss.str();
-        log_file_.flush();
-
-        if (console_output_ && level >= LogLevel::WARN) {
-            fprintf(stderr, "%s", ss.str().c_str());
+        if (!log_file_.is_open()) {
+            fprintf(stderr, "Failed to open log file: %s\n", current_log_file_.c_str());
+            return false;
         }
+
+        logger_thread_ = std::thread(&Logger::loggerThread, this);
+        initialized_ = true;
+        return true;
     }
     catch (const std::exception& e) {
-        fprintf(stderr, "Failed to write log: %s\n", e.what());
+        fprintf(stderr, "Failed to initialize logger: %s\n", e.what());
+        return false;
+    }
+}
+
+void Logger::log(LogLevel level, const std::string& message) {
+    if (!initialized_ || level < min_level_) {
+        return;
+    }
+
+    try {
+        LogMessage log_msg{
+            .level = level,
+            .message = message,
+            .timestamp = getCurrentTime()
+        };
+
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            if (message_queue_.size() < MAX_QUEUE_SIZE) {
+                message_queue_.push(std::move(log_msg));
+            }
+        }
+        queue_cv_.notify_one();
+
+    } catch (const std::exception& e) {
+        fprintf(stderr, "Failed to queue log message: %s\n", e.what());
+    }
+}
+
+void Logger::loggerThread() {
+    while (running_) {
+        std::vector<LogMessage> messages;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this] { 
+                return !message_queue_.empty() || !running_; 
+            });
+
+            while (!message_queue_.empty()) {
+                messages.push_back(std::move(message_queue_.front()));
+                message_queue_.pop();
+            }
+        }
+
+        for (const auto& msg : messages) {
+            try {
+                checkRotate();
+
+                std::stringstream ss;
+                ss << msg.timestamp << " [" << getLevelString(msg.level) 
+                   << "] " << msg.message << std::endl;
+
+                log_file_ << ss.str();
+                
+                if (console_output_ && msg.level >= LogLevel::WARN) {
+                    fprintf(stderr, "%s", ss.str().c_str());
+                }
+            } catch (const std::exception& e) {
+                fprintf(stderr, "Failed to write log: %s\n", e.what());
+            }
+        }
+        
+        if (!messages.empty()) {
+            log_file_.flush();
+        }
     }
 }
 
@@ -143,40 +225,6 @@ void Logger::cleanOldLogs() {
 void Logger::openLogFile() {
     current_log_file_ = log_dir_ + "/" + file_prefix_ + "_" + current_date_ + ".log";
     log_file_.open(current_log_file_, std::ios::app);
-}
-
-bool Logger::init(const std::string& log_dir, 
-                 const std::string& file_prefix,
-                 LogLevel level,
-                 bool console_output,
-                 size_t max_size,
-                 int max_files) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    try {
-        log_dir_ = log_dir;
-        file_prefix_ = file_prefix;
-        min_level_ = level;
-        console_output_ = console_output;
-        max_file_size_ = max_size;
-        max_files_ = max_files;
-
-        std::filesystem::create_directories(log_dir_);
-        current_date_ = getCurrentDate();
-        openLogFile();
-
-        if (!log_file_.is_open()) {
-            fprintf(stderr, "Failed to open log file: %s\n", current_log_file_.c_str());
-            return false;
-        }
-
-        initialized_ = true;
-        return true;
-    }
-    catch (const std::exception& e) {
-        fprintf(stderr, "Failed to initialize logger: %s\n", e.what());
-        return false;
-    }
 }
 
 } // namespace maplog 

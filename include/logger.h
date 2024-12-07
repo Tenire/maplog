@@ -18,6 +18,9 @@
 #include <mutex>
 #include <ctime>
 #include <sstream>
+#include <thread>
+#include <queue>
+#include <condition_variable>
 
 namespace maplog {
 
@@ -40,6 +43,7 @@ public:
              size_t max_size = 10 * 1024 * 1024,
              int max_files = 30);
     void log(LogLevel level, const std::string& message);
+    void stop();
     
     void debug(const std::string& message);
     void info(const std::string& message);
@@ -63,8 +67,16 @@ public:
     std::string getCurrentLogFile() const { return current_log_file_; }
 
 private:
-    Logger() : current_level_(LogLevel::INFO) {}
+    Logger();
+    ~Logger();
     
+    struct LogMessage {
+        LogLevel level;
+        std::string message;
+        std::string timestamp;
+    };
+
+    void loggerThread();
     std::string getCurrentTime();
     std::string getCurrentDate();
     std::string getLevelString(LogLevel level);
@@ -76,15 +88,21 @@ private:
     std::string log_dir_;
     std::string current_log_file_;
     std::ofstream log_file_;
-    std::mutex mutex_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::queue<LogMessage> message_queue_;
     LogLevel min_level_ = LogLevel::INFO;
     LogLevel current_level_;
     std::string current_date_;
     bool initialized_ = false;
+    bool running_ = false;
+    std::thread logger_thread_;
     bool console_output_ = true;
     size_t max_file_size_ = 10 * 1024 * 1024;
     int max_files_ = 30;
     std::string file_prefix_;
+    
+    static constexpr size_t MAX_QUEUE_SIZE = 10000;
 };
 
 } // namespace maplog

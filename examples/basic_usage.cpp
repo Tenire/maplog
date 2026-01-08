@@ -1,15 +1,18 @@
 #include "logger.h"
 
-int main() {
+int main()
+{
     // 直接初始化日志系统
     if (!maplog::Logger::instance().init(
-        "logs",                  // 日志目录
-        "basic_example",         // 文件前缀
-        maplog::LogLevel::DEBUG, // 日志级别
-        true,                    // 控制台输出
-        1024 * 1024,            // 文件大小限制：1MB
-        5                        // 最大文件数
-    )) {
+            "logs",                  // 日志目录
+            "basic_example",         // 文件前缀
+            maplog::LogLevel::DEBUG, // 文件最低级别
+            true,                    // 控制台输出
+            maplog::LogLevel::DEBUG, // 控制台最低级别 (新增参数！)
+            1024 * 1024,             // 文件大小限制：1MB
+            5                        // 最大文件数
+            ))
+    {
         return 1;
     }
 
@@ -24,10 +27,19 @@ int main() {
     LOG(maplog::LogLevel::INFO) << "Current memory usage: " << 1024 << "MB";
 
     // 演示条件日志
-    for (int i = 0; i < 3; ++i) {
-        LOG_IF(maplog::LogLevel::WARN, i > 1) 
-            << "Counter exceeded threshold: " << i;
+    for (int i = 0; i < 3; ++i)
+    {
+        LOG_IF(maplog::LogLevel::WARN, i > 1) << "Counter exceeded threshold: " << i;
     }
 
+    // 演示动态调整控制台级别
+    LOG_INFO("Now changing console level to WARN...");
+    maplog::Logger::instance().setConsoleLevel(maplog::LogLevel::WARN);
+    LOG_INFO("This INFO won't show in console, but will be in file");
+    LOG_WARN("This WARN will show in both");
+
+    // 演示 flush() - 确保所有日志在程序退出前被写入
+    maplog::Logger::instance().flush();
+
     return 0;
-} 
+}

@@ -83,7 +83,7 @@ bool Logger::init(
     }
 }
 
-void Logger::log(LogLevel level, const std::string& message)
+void Logger::log(LogLevel level, const std::string& message, const SourceLocation& loc)
 {
     if (!initialized_.load(std::memory_order_acquire) || level < file_min_level_)
     {
@@ -92,7 +92,13 @@ void Logger::log(LogLevel level, const std::string& message)
 
     try
     {
-        LogMessage log_msg{.level = level, .message = message, .timestamp = getCurrentTime()};
+        LogMessage log_msg{
+            .level = level,
+            .message = message,
+            .timestamp = getCurrentTime(),
+            .file = loc.file ? loc.file : "",
+            .line = loc.line,
+            .func = loc.func ? loc.func : ""};
 
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -139,15 +145,36 @@ void Logger::loggerThread()
             {
                 checkRotate();
 
-                std::stringstream ss;
-                ss << msg.timestamp << " [" << getLevelString(msg.level) << "] " << msg.message << std::endl;
+                // Format for file (no color)
+                std::stringstream file_ss;
+                file_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
+                if (show_source_location_ && !msg.file.empty())
+                {
+                    file_ss << " [" << extractFilename(msg.file) << ":" << msg.line << " " << msg.func << "]";
+                }
+                file_ss << " " << msg.message << std::endl;
+                log_file_ << file_ss.str();
 
-                log_file_ << ss.str();
-
-                // Use configurable console_min_level_ instead of hardcoded WARN
+                // Console output with color
                 if (console_output_ && msg.level >= console_min_level_)
                 {
-                    fprintf(stderr, "%s", ss.str().c_str());
+                    std::stringstream console_ss;
+                    if (color_output_)
+                    {
+                        console_ss << getLevelColor(msg.level);
+                    }
+                    console_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
+                    if (show_source_location_ && !msg.file.empty())
+                    {
+                        console_ss << " [" << extractFilename(msg.file) << ":" << msg.line << "]";
+                    }
+                    console_ss << " " << msg.message;
+                    if (color_output_)
+                    {
+                        console_ss << "\033[0m"; // Reset color
+                    }
+                    console_ss << std::endl;
+                    fprintf(stderr, "%s", console_ss.str().c_str());
                 }
             }
             catch (const std::exception& e)
@@ -185,25 +212,25 @@ void Logger::flush()
     flush_cv_.wait(lock, [this] { return !flush_requested_.load(std::memory_order_acquire); });
 }
 
-void Logger::debug(const std::string& message)
+void Logger::debug(const std::string& message, const SourceLocation& loc)
 {
-    log(LogLevel::DEBUG, message);
+    log(LogLevel::DEBUG, message, loc);
 }
-void Logger::info(const std::string& message)
+void Logger::info(const std::string& message, const SourceLocation& loc)
 {
-    log(LogLevel::INFO, message);
+    log(LogLevel::INFO, message, loc);
 }
-void Logger::warn(const std::string& message)
+void Logger::warn(const std::string& message, const SourceLocation& loc)
 {
-    log(LogLevel::WARN, message);
+    log(LogLevel::WARN, message, loc);
 }
-void Logger::error(const std::string& message)
+void Logger::error(const std::string& message, const SourceLocation& loc)
 {
-    log(LogLevel::ERROR, message);
+    log(LogLevel::ERROR, message, loc);
 }
-void Logger::fatal(const std::string& message)
+void Logger::fatal(const std::string& message, const SourceLocation& loc)
 {
-    log(LogLevel::FATAL, message);
+    log(LogLevel::FATAL, message, loc);
 }
 
 std::string Logger::getCurrentTime()
@@ -234,16 +261,41 @@ std::string Logger::getLevelString(LogLevel level)
     case LogLevel::DEBUG:
         return "DEBUG";
     case LogLevel::INFO:
-        return "INFO";
+        return "INFO ";
     case LogLevel::WARN:
-        return "WARN";
+        return "WARN ";
     case LogLevel::ERROR:
         return "ERROR";
     case LogLevel::FATAL:
         return "FATAL";
     default:
-        return "UNKNOWN";
+        return "UNKN ";
     }
+}
+
+std::string Logger::getLevelColor(LogLevel level)
+{
+    switch (level)
+    {
+    case LogLevel::DEBUG:
+        return "\033[36m"; // Cyan
+    case LogLevel::INFO:
+        return "\033[32m"; // Green
+    case LogLevel::WARN:
+        return "\033[33m"; // Yellow
+    case LogLevel::ERROR:
+        return "\033[31m"; // Red
+    case LogLevel::FATAL:
+        return "\033[35;1m"; // Magenta Bold
+    default:
+        return "";
+    }
+}
+
+std::string Logger::extractFilename(const std::string& path)
+{
+    size_t pos = path.find_last_of("/\\");
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
 }
 
 void Logger::checkRotate()

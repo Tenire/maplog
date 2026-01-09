@@ -16,15 +16,20 @@ int main()
         return 1;
     }
 
-    // 演示不同级别的日志
+    // 演示不同级别的日志 - 直接传参用法
     LOG_DEBUG("This is a debug message");
     LOG_INFO("Application started successfully");
     LOG_WARN("Resource usage is high");
     LOG_ERROR("Failed to connect to database");
     LOG_FATAL("System is shutting down");
 
-    // 演示流式语法
-    LOG(maplog::LogLevel::INFO) << "Current memory usage: " << 1024 << "MB";
+    // 演示流式语法 - LOG_INFO() << 用法（无参数时返回流）
+    LOG_INFO() << "Current memory usage: " << 1024 << "MB";
+    LOG_DEBUG() << "User count: " << 42;
+    LOG_WARN() << "Disk space low: " << 95 << "%";
+
+    // 也可以用 LOG(level) << 语法
+    LOG(maplog::LogLevel::INFO) << "Alternative syntax with LOG()";
 
     // 演示条件日志
     for (int i = 0; i < 3; ++i)

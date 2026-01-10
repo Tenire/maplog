@@ -67,23 +67,15 @@ bool Logger::init()
 {
     try
     {
-        if (log_dir_.empty())
+        if (!log_dir_.empty())
         {
-            log_dir_ = "logs";
-        }
-        if (file_prefix_.empty())
-        {
-            file_prefix_ = "maplog";
-        }
-
-        std::filesystem::create_directories(log_dir_);
-        current_date_ = getCurrentDate();
-        openLogFile();
-
-        if (!log_file_.is_open())
-        {
-            fprintf(stderr, "Failed to open log file: %s\n", current_log_file_.c_str());
-            return false;
+            if (file_prefix_.empty())
+            {
+                file_prefix_ = "maplog";
+            }
+            std::filesystem::create_directories(log_dir_);
+            current_date_ = getCurrentDate();
+            openLogFile();
         }
 
         logger_thread_ = std::thread(&Logger::loggerThread, this);
@@ -162,16 +154,18 @@ void Logger::loggerThread()
         {
             try
             {
-                checkRotate();
-
-                std::stringstream file_ss;
-                file_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
-                if (show_source_location_ && !msg.file.empty())
+                if (log_file_.is_open())
                 {
-                    file_ss << " [" << extractFilename(msg.file) << ":" << msg.line << " " << msg.func << "]";
+                    checkRotate();
+                    std::stringstream file_ss;
+                    file_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
+                    if (show_source_location_ && !msg.file.empty())
+                    {
+                        file_ss << " [" << extractFilename(msg.file) << ":" << msg.line << " " << msg.func << "]";
+                    }
+                    file_ss << " " << msg.message << std::endl;
+                    log_file_ << file_ss.str();
                 }
-                file_ss << " " << msg.message << std::endl;
-                log_file_ << file_ss.str();
 
                 if (console_output_ && msg.level >= console_min_level_)
                 {
@@ -200,12 +194,11 @@ void Logger::loggerThread()
             }
         }
 
-        if (!messages.empty() || should_flush)
+        if (log_file_.is_open() && (!messages.empty() || should_flush))
         {
             log_file_.flush();
         }
 
-        // Notify flush() that we're done
         if (should_flush)
         {
             flush_requested_.store(false, std::memory_order_release);

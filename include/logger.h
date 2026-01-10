@@ -69,6 +69,13 @@ public:
         const std::string& log_dir, const std::string& file_prefix = "maplog", LogLevel file_level = LogLevel::INFO, bool console_output = true,
         LogLevel console_level = LogLevel::WARN, size_t max_size = 10 * 1024 * 1024, int max_files = 30);
 
+    /**
+     * @brief Initialize the logger using current configuration
+     * This is the terminal operation for the chainable configuration
+     * @example Logger::instance().setLogDir("logs").setFileLevel(LogLevel::DEBUG).init();
+     */
+    bool init();
+
     void log(LogLevel level, const std::string& message, const SourceLocation& loc = {});
     void stop();
 
@@ -84,21 +91,54 @@ public:
     void error(const std::string& message, const SourceLocation& loc = {});
     void fatal(const std::string& message, const SourceLocation& loc = {});
 
-    void setFileLevel(LogLevel level)
+    // ========== Chainable Configuration Methods ==========
+    // All setters return Logger& to support fluent interface.
+    // Call init() as the terminal operation after configuration.
+
+    Logger& setLogDir(const std::string& log_dir)
+    {
+        log_dir_ = log_dir;
+        return *this;
+    }
+    Logger& setFilePrefix(const std::string& file_prefix)
+    {
+        file_prefix_ = file_prefix;
+        return *this;
+    }
+    Logger& setFileLevel(LogLevel level)
     {
         file_min_level_ = level;
+        return *this;
     }
-    void setConsoleLevel(LogLevel level)
+    Logger& setConsoleOutput(bool enable)
+    {
+        console_output_ = enable;
+        return *this;
+    }
+    Logger& setConsoleLevel(LogLevel level)
     {
         console_min_level_ = level;
+        return *this;
     }
-    void setColorOutput(bool enabled)
+    Logger& setColorOutput(bool enabled)
     {
         color_output_ = enabled;
+        return *this;
     }
-    void setShowSourceLocation(bool enabled)
+    Logger& setShowSourceLocation(bool enabled)
     {
         show_source_location_ = enabled;
+        return *this;
+    }
+    Logger& setMaxFileSize(size_t max_size)
+    {
+        max_file_size_ = max_size;
+        return *this;
+    }
+    Logger& setMaxFiles(int max_files)
+    {
+        max_files_ = max_files;
+        return *this;
     }
 
     std::string getCurrentLogFile() const
@@ -151,6 +191,7 @@ private:
     size_t max_file_size_ = 10 * 1024 * 1024;
     int max_files_ = 30;
     std::string file_prefix_;
+    std::once_flag init_flag_;
 
     static constexpr size_t MAX_QUEUE_SIZE = 10000;
 };

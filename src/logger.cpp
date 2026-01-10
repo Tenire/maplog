@@ -52,15 +52,29 @@ bool Logger::init(
     const std::string& log_dir, const std::string& file_prefix, LogLevel file_level, bool console_output, LogLevel console_level, size_t max_size,
     int max_files)
 {
+    log_dir_ = log_dir;
+    file_prefix_ = file_prefix;
+    file_min_level_ = file_level;
+    console_output_ = console_output;
+    console_min_level_ = console_level;
+    max_file_size_ = max_size;
+    max_files_ = max_files;
+
+    return init();
+}
+
+bool Logger::init()
+{
     try
     {
-        log_dir_ = log_dir;
-        file_prefix_ = file_prefix;
-        file_min_level_ = file_level;
-        console_output_ = console_output;
-        console_min_level_ = console_level;
-        max_file_size_ = max_size;
-        max_files_ = max_files;
+        if (log_dir_.empty())
+        {
+            log_dir_ = "logs";
+        }
+        if (file_prefix_.empty())
+        {
+            file_prefix_ = "maplog";
+        }
 
         std::filesystem::create_directories(log_dir_);
         current_date_ = getCurrentDate();
@@ -85,7 +99,12 @@ bool Logger::init(
 
 void Logger::log(LogLevel level, const std::string& message, const SourceLocation& loc)
 {
-    if (!initialized_.load(std::memory_order_acquire) || level < file_min_level_)
+    if (!initialized_.load(std::memory_order_acquire))
+    {
+        std::call_once(init_flag_, [this]() { init(); });
+    }
+
+    if (level < file_min_level_)
     {
         return;
     }
@@ -145,7 +164,6 @@ void Logger::loggerThread()
             {
                 checkRotate();
 
-                // Format for file (no color)
                 std::stringstream file_ss;
                 file_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
                 if (show_source_location_ && !msg.file.empty())
@@ -155,7 +173,6 @@ void Logger::loggerThread()
                 file_ss << " " << msg.message << std::endl;
                 log_file_ << file_ss.str();
 
-                // Console output with color
                 if (console_output_ && msg.level >= console_min_level_)
                 {
                     std::stringstream console_ss;
@@ -171,7 +188,7 @@ void Logger::loggerThread()
                     console_ss << " " << msg.message;
                     if (color_output_)
                     {
-                        console_ss << "\033[0m"; // Reset color
+                        console_ss << "\033[0m";
                     }
                     console_ss << std::endl;
                     fprintf(stderr, "%s", console_ss.str().c_str());

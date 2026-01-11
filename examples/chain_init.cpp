@@ -1,12 +1,24 @@
+/**
+ * @Author: Tenire
+ * @Date: 10 Jan 2026 19:08
+ * @Email: i@tenire.com
+ * @Description:
+ *                 _/_/_/_/_/                    _/
+ *                    _/      _/_/    _/_/_/        _/  _/_/    _/_/
+ *                   _/    _/_/_/_/  _/    _/  _/  _/_/      _/_/_/_/
+ *                  _/    _/        _/    _/  _/  _/        _/
+ *                 _/      _/_/_/  _/    _/  _/  _/          _/_/_/
+ *
+ */
+
 #include "logger.h"
 
-// 链式配置示例：只设置你关心的选项
 int main()
 {
-    // 链式调用，只配置需要的选项
     maplog::Logger::instance()
         .setLogDir("custom_logs")
         .setFilePrefix("myapp")
+        .setFileLevel(maplog::LogLevel::DEBUG)
         .setConsoleLevel(maplog::LogLevel::DEBUG)
         .setColorOutput(true)
         .init();

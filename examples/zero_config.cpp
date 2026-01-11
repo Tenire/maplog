@@ -1,15 +1,26 @@
+/**
+ * @Author: Tenire
+ * @Date: 10 Jan 2026 19:08
+ * @Email: i@tenire.com
+ * @Description:
+ *                 _/_/_/_/_/                    _/
+ *                    _/      _/_/    _/_/_/        _/  _/_/    _/_/
+ *                   _/    _/_/_/_/  _/    _/  _/  _/_/      _/_/_/_/
+ *                  _/    _/        _/    _/  _/  _/        _/
+ *                 _/      _/_/_/  _/    _/  _/  _/          _/_/_/
+ *
+ */
+
 #include "logger.h"
 
-// 零配置示例：不需要任何初始化，直接使用
 int main()
 {
-    // 直接用！首次调用时自动初始化
+    // No initialization needed, auto-init on first use
     LOG_INFO("Hello, MapLog!");
     LOG_DEBUG("Debug info");
     LOG_WARN("Warning message");
     LOG_ERROR("Error occurred");
 
-    // 流式语法
     LOG_INFO() << "User count: " << 42;
 
     return 0;

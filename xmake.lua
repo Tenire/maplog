@@ -17,6 +17,7 @@ target("maplog")
     set_kind("static")
     add_files("src/*.cpp")
     add_includedirs("include", {public = true})
+    add_headerfiles("include/**.h")
 
 -- Include examples if enabled
 if has_config("build_examples") then

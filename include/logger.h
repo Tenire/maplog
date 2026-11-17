@@ -53,7 +53,19 @@ struct SourceLocation
 class Logger
 {
 public:
+    Logger();
+    ~Logger();
+    Logger(const Logger&) = delete;
+    Logger& operator=(const Logger&) = delete;
+    Logger(Logger&&) = delete;
+    Logger& operator=(Logger&&) = delete;
+
     static Logger& instance();
+    static Logger& get(const std::string& name);
+    static Logger& channel(const std::string& name)
+    {
+        return get(name);
+    }
 
     /**
      * @brief Initialize the logger
@@ -76,7 +88,8 @@ public:
      */
     bool init();
 
-    void log(LogLevel level, const std::string& message, const SourceLocation& loc = {});
+    void log(LogLevel level, const std::string& message, const SourceLocation& loc = {}, bool raw_override = false);
+    void raw(const std::string& message, LogLevel level = LogLevel::INFO);
     void stop();
 
     /**
@@ -140,6 +153,21 @@ public:
         max_files_ = max_files;
         return *this;
     }
+    Logger& setShowTimestamp(bool enabled)
+    {
+        show_timestamp_ = enabled;
+        return *this;
+    }
+    Logger& setShowLevel(bool enabled)
+    {
+        show_level_ = enabled;
+        return *this;
+    }
+    Logger& setRawOutput(bool enabled)
+    {
+        raw_output_ = enabled;
+        return *this;
+    }
 
     std::string getCurrentLogFile() const
     {
@@ -147,9 +175,6 @@ public:
     }
 
 private:
-    Logger();
-    ~Logger();
-
     struct LogMessage
     {
         LogLevel level;
@@ -158,6 +183,7 @@ private:
         std::string file;
         int line;
         std::string func;
+        bool raw = false;
     };
 
     void loggerThread();
@@ -188,6 +214,9 @@ private:
     bool console_output_ = true;
     bool color_output_ = true;
     bool show_source_location_ = true;
+    bool show_timestamp_ = true;
+    bool show_level_ = true;
+    bool raw_output_ = false;
     size_t max_file_size_ = 10 * 1024 * 1024;
     int max_files_ = 30;
     std::string file_prefix_;
@@ -202,10 +231,20 @@ private:
 class LogStream
 {
 public:
-    LogStream(LogLevel level, SourceLocation loc = SourceLocation::current()) : level_(level), loc_(loc), active_(true) {}
+    LogStream(LogLevel level, SourceLocation loc = SourceLocation::current(), bool raw_override = false)
+        : logger_(&Logger::instance()), level_(level), loc_(loc), raw_override_(raw_override), active_(true)
+    {
+    }
+
+    LogStream(Logger& logger, LogLevel level, SourceLocation loc = SourceLocation::current(), bool raw_override = false)
+        : logger_(&logger), level_(level), loc_(loc), raw_override_(raw_override), active_(true)
+    {
+    }
 
     // Move constructor - transfer ownership
-    LogStream(LogStream&& other) noexcept : level_(other.level_), loc_(other.loc_), ss_(std::move(other.ss_)), active_(other.active_)
+    LogStream(LogStream&& other) noexcept
+        : logger_(other.logger_), level_(other.level_), loc_(other.loc_), ss_(std::move(other.ss_)), raw_override_(other.raw_override_),
+          active_(other.active_)
     {
         other.active_ = false;
     }
@@ -218,10 +257,9 @@ public:
     {
         if (active_ && !ss_.str().empty())
         {
-            Logger::instance().log(level_, ss_.str(), loc_);
+            logger_->log(level_, ss_.str(), loc_, raw_override_);
         }
     }
-
     template <typename T>
     LogStream& operator<<(const T& value)
     {
@@ -230,10 +268,17 @@ public:
     }
 
 private:
+    Logger* logger_;
     LogLevel level_;
     SourceLocation loc_;
     std::stringstream ss_;
+    bool raw_override_;
     bool active_;
+};
+
+struct LogStreamVoidify
+{
+    void operator&(const LogStream&) const noexcept {}
 };
 
 } // namespace maplog
@@ -276,4 +321,34 @@ private:
 #define LOG_FATAL(...)    _MAPLOG_GET_MACRO(_0 __VA_OPT__(, ) __VA_ARGS__, _LOG_FATAL_1, _LOG_FATAL_0)(__VA_ARGS__)
 
 #define LOG(level)               maplog::LogStream(level, _MAPLOG_LOC)
-#define LOG_IF(level, condition) (condition ? maplog::LogStream(level, _MAPLOG_LOC) : maplog::LogStream(maplog::LogLevel::DEBUG, _MAPLOG_LOC))
+#define LOG_IF(level, condition) !(condition) ? (void)0 : maplog::LogStreamVoidify{} & maplog::LogStream((level), _MAPLOG_LOC)
+
+#define LOG_TO(logger, level)               maplog::LogStream((logger), (level), _MAPLOG_LOC)
+#define LOG_TO_IF(logger, level, condition) !(condition) ? (void)0 : maplog::LogStreamVoidify{} & maplog::LogStream((logger), (level), _MAPLOG_LOC)
+#define LOG_RAW(logger, msg)                (logger).raw((msg))
+
+#define _MAPLOG_GET_MACRO_2(_0, _1, _2, NAME, ...) NAME
+#define _MAPLOG_CHANNEL_STREAM(name, level)      maplog::LogStream(maplog::Logger::get(name), (level), _MAPLOG_LOC)
+#define _MAPLOG_CHANNEL_DIRECT(name, level, msg) maplog::Logger::get(name).log((level), (msg), _MAPLOG_LOC)
+
+#define LOG_CHANNEL(name, level) _MAPLOG_CHANNEL_STREAM(name, level)
+
+#define _LOG_CHANNEL_DEBUG_1(name)      _MAPLOG_CHANNEL_STREAM(name, maplog::LogLevel::DEBUG)
+#define _LOG_CHANNEL_DEBUG_2(name, msg) _MAPLOG_CHANNEL_DIRECT(name, maplog::LogLevel::DEBUG, msg)
+#define LOG_CHANNEL_DEBUG(...)          _MAPLOG_GET_MACRO_2(_0, __VA_ARGS__, _LOG_CHANNEL_DEBUG_2, _LOG_CHANNEL_DEBUG_1)(__VA_ARGS__)
+
+#define _LOG_CHANNEL_INFO_1(name)      _MAPLOG_CHANNEL_STREAM(name, maplog::LogLevel::INFO)
+#define _LOG_CHANNEL_INFO_2(name, msg) _MAPLOG_CHANNEL_DIRECT(name, maplog::LogLevel::INFO, msg)
+#define LOG_CHANNEL_INFO(...)          _MAPLOG_GET_MACRO_2(_0, __VA_ARGS__, _LOG_CHANNEL_INFO_2, _LOG_CHANNEL_INFO_1)(__VA_ARGS__)
+
+#define _LOG_CHANNEL_WARN_1(name)      _MAPLOG_CHANNEL_STREAM(name, maplog::LogLevel::WARN)
+#define _LOG_CHANNEL_WARN_2(name, msg) _MAPLOG_CHANNEL_DIRECT(name, maplog::LogLevel::WARN, msg)
+#define LOG_CHANNEL_WARN(...)          _MAPLOG_GET_MACRO_2(_0, __VA_ARGS__, _LOG_CHANNEL_WARN_2, _LOG_CHANNEL_WARN_1)(__VA_ARGS__)
+
+#define _LOG_CHANNEL_ERROR_1(name)      _MAPLOG_CHANNEL_STREAM(name, maplog::LogLevel::ERROR)
+#define _LOG_CHANNEL_ERROR_2(name, msg) _MAPLOG_CHANNEL_DIRECT(name, maplog::LogLevel::ERROR, msg)
+#define LOG_CHANNEL_ERROR(...)          _MAPLOG_GET_MACRO_2(_0, __VA_ARGS__, _LOG_CHANNEL_ERROR_2, _LOG_CHANNEL_ERROR_1)(__VA_ARGS__)
+
+#define _LOG_CHANNEL_FATAL_1(name)      _MAPLOG_CHANNEL_STREAM(name, maplog::LogLevel::FATAL)
+#define _LOG_CHANNEL_FATAL_2(name, msg) _MAPLOG_CHANNEL_DIRECT(name, maplog::LogLevel::FATAL, msg)
+#define LOG_CHANNEL_FATAL(...)          _MAPLOG_GET_MACRO_2(_0, __VA_ARGS__, _LOG_CHANNEL_FATAL_2, _LOG_CHANNEL_FATAL_1)(__VA_ARGS__)

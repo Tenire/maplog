@@ -12,3 +12,13 @@ target("maplog_example_zero")
     set_kind("binary")
     add_files("zero_config.cpp")
     add_deps("maplog")
+
+target("maplog_example_multi_channel")
+    set_kind("binary")
+    add_files("multi_channel.cpp")
+    add_deps("maplog")
+
+target("maplog_example_multi_channel")
+    set_kind("binary")
+    add_files("multi_channel.cpp")
+    add_deps("maplog")

@@ -16,6 +16,8 @@
 - **控制台彩色输出**（按日志级别显示不同颜色）
 - **支持链式配置（Fluent API）**
 - **零配置启动** — 无需初始化即可直接使用
+- **多实例与命名通道** — 支持 `Logger::get("name")` / `Logger::channel("name")` 及独立 `Logger` 实例
+- **按通道格式化与原始输出模式** — 支持独立控制时间戳、级别标签、源码位置及 `raw` 原始输出
 
 ## 使用方法
 
@@ -68,6 +70,47 @@ int main() {
 }
 ```
 
+### 多实例与命名通道
+
+适用于需要将业务日志与 HTTP 访问日志、审计日志等分离的场景：
+
+```cpp
+#include "logger.h"
+
+int main() {
+    // 1. 命名通道（线程安全注册表）
+    auto& access_log = maplog::Logger::get("access") // 或 Logger::channel("access")
+                           .setLogDir("logs")
+                           .setFilePrefix("access")
+                           .setConsoleOutput(false)
+                           .setShowSourceLocation(false);
+    access_log.init();
+
+    // 通道宏（支持直接传参和流式语法）
+    LOG_CHANNEL_INFO("access", "GET /api/users 200 3ms");
+    LOG_CHANNEL_INFO("access") << "GET /api/orders/" << 42 << " 200 5ms";
+
+    // 原始输出（省略时间戳、级别与源码位置）
+    access_log.raw("127.0.0.1 - - \"GET /health 200\" 0.5ms");
+    LOG_RAW(access_log, "127.0.0.1 - - \"POST /login 200\" 12ms");
+
+    // 2. 独立 Logger 实例（开启全局原始输出模式）
+    maplog::Logger audit_logger;
+    audit_logger
+        .setLogDir("logs")
+        .setFilePrefix("audit")
+        .setRawOutput(true)
+        .init();
+
+    LOG_TO(audit_logger, maplog::LogLevel::INFO) << "{\"event\":\"login\",\"uid\":1001}";
+    LOG_TO_IF(audit_logger, maplog::LogLevel::WARN, true) << "{\"event\":\"rate_limit\"}";
+
+    access_log.flush();
+    audit_logger.flush();
+    return 0;
+}
+```
+
 ### API 说明
 
 | 方法                     | 说明                                   |
@@ -76,6 +119,8 @@ int main() {
 | `init(dir, prefix, ...)` | 传统初始化方式，一次性传入所有参数     |
 | `flush()`                | 强制刷新队列中所有待写日志到磁盘       |
 | `stop()`                 | 停止日志线程                           |
+| `Logger::get(name)`      | 获取或创建命名 `Logger` 实例（`Logger::channel(name)` 为别名） |
+| `raw(msg, level)`        | 以原始模式写入单条日志（省略时间戳、级别与源码位置） |
 
 **链式配置方法（返回 `Logger&`，支持连续调用）：**
 
@@ -88,8 +133,21 @@ int main() {
 | `setConsoleLevel(level)`      | 设置控制台最低输出级别     | `WARN`         |
 | `setColorOutput(bool)`        | 是否启用彩色输出           | `true`         |
 | `setShowSourceLocation(bool)` | 是否显示源码位置           | `true`         |
+| `setShowTimestamp(bool)`      | 是否显示时间戳             | `true`         |
+| `setShowLevel(bool)`          | 是否显示日志级别标签       | `true`         |
+| `setRawOutput(bool)`          | 是否启用原始输出模式       | `false`        |
 | `setMaxFileSize(size)`        | 设置单个日志文件最大大小   | `10MB`         |
 | `setMaxFiles(count)`          | 设置最多保留的日志文件数量 | `30`           |
+
+**通道与目标实例宏：**
+
+| 宏 | 说明 |
+| --- | --- |
+| `LOG_TO(logger, level)` | 向指定 `Logger` 实例写入流式日志 |
+| `LOG_TO_IF(logger, level, cond)` | 条件满足时向指定 `Logger` 实例写入流式日志 |
+| `LOG_RAW(logger, msg)` | 向指定 `Logger` 实例写入单条原始日志 |
+| `LOG_CHANNEL(name, level)` | 向命名通道写入流式日志 |
+| `LOG_CHANNEL_DEBUG/INFO/WARN/ERROR/FATAL(name, ...)` | 向命名通道写入对应级别日志（支持流式与直接传参） |
 
 ## 构建
 

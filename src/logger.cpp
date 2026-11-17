@@ -18,6 +18,8 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include <memory>
+#include <unordered_map>
 
 namespace maplog
 {
@@ -26,6 +28,23 @@ Logger& Logger::instance()
 {
     static Logger instance;
     return instance;
+}
+
+Logger& Logger::get(const std::string& name)
+{
+    static std::mutex registry_mutex;
+    static std::unordered_map<std::string, std::unique_ptr<Logger>> registry;
+
+    std::lock_guard<std::mutex> lock(registry_mutex);
+    auto it = registry.find(name);
+    if (it == registry.end())
+    {
+        auto logger = std::make_unique<Logger>();
+        logger->file_prefix_ = name.empty() ? "maplog" : name;
+        auto [inserted_it, _] = registry.emplace(name, std::move(logger));
+        return *inserted_it->second;
+    }
+    return *it->second;
 }
 
 Logger::Logger()
@@ -67,18 +86,26 @@ bool Logger::init()
 {
     try
     {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
         if (!log_dir_.empty())
         {
             if (file_prefix_.empty())
             {
                 file_prefix_ = "maplog";
             }
-            std::filesystem::create_directories(log_dir_);
-            current_date_ = getCurrentDate();
-            openLogFile();
+            if (!log_file_.is_open())
+            {
+                std::filesystem::create_directories(log_dir_);
+                current_date_ = getCurrentDate();
+                openLogFile();
+            }
         }
 
-        logger_thread_ = std::thread(&Logger::loggerThread, this);
+        if (!logger_thread_.joinable())
+        {
+            running_.store(true, std::memory_order_release);
+            logger_thread_ = std::thread(&Logger::loggerThread, this);
+        }
         initialized_.store(true, std::memory_order_release);
         return true;
     }
@@ -89,14 +116,16 @@ bool Logger::init()
     }
 }
 
-void Logger::log(LogLevel level, const std::string& message, const SourceLocation& loc)
+void Logger::log(LogLevel level, const std::string& message, const SourceLocation& loc, bool raw_override)
 {
     if (!initialized_.load(std::memory_order_acquire))
     {
         std::call_once(init_flag_, [this]() { init(); });
     }
 
-    if (level < file_min_level_)
+    const bool to_file = !log_dir_.empty() && level >= file_min_level_;
+    const bool to_console = console_output_ && level >= console_min_level_;
+    if (!to_file && !to_console)
     {
         return;
     }
@@ -109,8 +138,8 @@ void Logger::log(LogLevel level, const std::string& message, const SourceLocatio
             .timestamp = getCurrentTime(),
             .file = loc.file ? loc.file : "",
             .line = loc.line,
-            .func = loc.func ? loc.func : ""};
-
+            .func = loc.func ? loc.func : "",
+            .raw = raw_override};
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             if (message_queue_.size() < MAX_QUEUE_SIZE)
@@ -126,9 +155,14 @@ void Logger::log(LogLevel level, const std::string& message, const SourceLocatio
     }
 }
 
+void Logger::raw(const std::string& message, LogLevel level)
+{
+    log(level, message, {}, true);
+}
+
 void Logger::loggerThread()
 {
-    while (running_.load(std::memory_order_acquire))
+    while (true)
     {
         std::vector<LogMessage> messages;
         bool should_flush = false;
@@ -138,6 +172,10 @@ void Logger::loggerThread()
                 lock,
                 [this] { return !message_queue_.empty() || !running_.load(std::memory_order_acquire) || flush_requested_.load(std::memory_order_acquire); });
 
+            if (message_queue_.empty() && !running_.load(std::memory_order_acquire))
+            {
+                break;
+            }
             while (!message_queue_.empty())
             {
                 messages.push_back(std::move(message_queue_.front()));
@@ -154,17 +192,47 @@ void Logger::loggerThread()
         {
             try
             {
-                if (log_file_.is_open())
+                if (log_file_.is_open() && msg.level >= file_min_level_)
                 {
                     checkRotate();
-                    std::stringstream file_ss;
-                    file_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
-                    if (show_source_location_ && !msg.file.empty())
+                    if (msg.raw || raw_output_)
                     {
-                        file_ss << " [" << extractFilename(msg.file) << ":" << msg.line << " " << msg.func << "]";
+                        log_file_ << msg.message << '\n';
                     }
-                    file_ss << " " << msg.message << std::endl;
-                    log_file_ << file_ss.str();
+                    else
+                    {
+                        std::stringstream file_ss;
+                        bool need_space = false;
+                        if (show_timestamp_)
+                        {
+                            file_ss << msg.timestamp;
+                            need_space = true;
+                        }
+                        if (show_level_)
+                        {
+                            if (need_space)
+                            {
+                                file_ss << ' ';
+                            }
+                            file_ss << '[' << getLevelString(msg.level) << ']';
+                            need_space = true;
+                        }
+                        if (show_source_location_ && !msg.file.empty())
+                        {
+                            if (need_space)
+                            {
+                                file_ss << ' ';
+                            }
+                            file_ss << '[' << extractFilename(msg.file) << ':' << msg.line << ' ' << msg.func << ']';
+                            need_space = true;
+                        }
+                        if (need_space)
+                        {
+                            file_ss << ' ';
+                        }
+                        file_ss << msg.message << '\n';
+                        log_file_ << file_ss.str();
+                    }
                 }
 
                 if (console_output_ && msg.level >= console_min_level_)
@@ -174,17 +242,47 @@ void Logger::loggerThread()
                     {
                         console_ss << getLevelColor(msg.level);
                     }
-                    console_ss << msg.timestamp << " [" << getLevelString(msg.level) << "]";
-                    if (show_source_location_ && !msg.file.empty())
+                    if (msg.raw || raw_output_)
                     {
-                        console_ss << " [" << extractFilename(msg.file) << ":" << msg.line << "]";
+                        console_ss << msg.message;
                     }
-                    console_ss << " " << msg.message;
+                    else
+                    {
+                        bool need_space = false;
+                        if (show_timestamp_)
+                        {
+                            console_ss << msg.timestamp;
+                            need_space = true;
+                        }
+                        if (show_level_)
+                        {
+                            if (need_space)
+                            {
+                                console_ss << ' ';
+                            }
+                            console_ss << '[' << getLevelString(msg.level) << ']';
+                            need_space = true;
+                        }
+                        if (show_source_location_ && !msg.file.empty())
+                        {
+                            if (need_space)
+                            {
+                                console_ss << ' ';
+                            }
+                            console_ss << '[' << extractFilename(msg.file) << ':' << msg.line << ']';
+                            need_space = true;
+                        }
+                        if (need_space)
+                        {
+                            console_ss << ' ';
+                        }
+                        console_ss << msg.message;
+                    }
                     if (color_output_)
                     {
                         console_ss << "\033[0m";
                     }
-                    console_ss << std::endl;
+                    console_ss << '\n';
                     fprintf(stderr, "%s", console_ss.str().c_str());
                 }
             }
@@ -204,6 +302,10 @@ void Logger::loggerThread()
             flush_requested_.store(false, std::memory_order_release);
             flush_cv_.notify_all();
         }
+    }
+    if (log_file_.is_open())
+    {
+        log_file_.flush();
     }
 }
 
@@ -317,8 +419,10 @@ void Logger::checkRotate()
         return;
     }
 
-    if (log_file_.tellp() >= max_file_size_)
+    const auto pos = log_file_.tellp();
+    if (pos != std::streampos(-1) && static_cast<size_t>(pos) >= max_file_size_)
     {
+        log_file_.flush();
         rotateLog();
     }
 }
@@ -326,9 +430,30 @@ void Logger::checkRotate()
 void Logger::rotateLog()
 {
     log_file_.close();
-    current_date_ = getCurrentDate();
-    cleanOldLogs();
+    std::string new_date = getCurrentDate();
+
+    std::error_code ec;
+    if (!current_log_file_.empty() && std::filesystem::exists(current_log_file_, ec) &&
+        std::filesystem::file_size(current_log_file_, ec) >= max_file_size_)
+    {
+        int index = 1;
+        std::string archived_file;
+        do
+        {
+            archived_file = log_dir_ + "/" + file_prefix_ + "_" + current_date_ + "_" + std::to_string(index) + ".log";
+            ++index;
+        } while (std::filesystem::exists(archived_file, ec));
+
+        std::filesystem::rename(current_log_file_, archived_file, ec);
+        if (ec)
+        {
+            fprintf(stderr, "Failed to archive log file %s: %s\n", current_log_file_.c_str(), ec.message().c_str());
+        }
+    }
+
+    current_date_ = new_date;
     openLogFile();
+    cleanOldLogs();
 
     if (!log_file_.is_open())
     {
@@ -338,23 +463,48 @@ void Logger::rotateLog()
 
 void Logger::cleanOldLogs()
 {
+    if (max_files_ <= 0)
+    {
+        return;
+    }
     try
     {
-        std::vector<std::string> log_files;
+        const std::string expected_prefix = file_prefix_ + "_";
+        struct LogFileEntry
+        {
+            std::filesystem::path path;
+            std::filesystem::file_time_type mtime;
+        };
+        std::vector<LogFileEntry> log_files;
 
         for (const auto& entry : std::filesystem::directory_iterator(log_dir_))
         {
-            if (entry.path().extension() == ".log")
+            if (!entry.is_regular_file())
             {
-                log_files.push_back(entry.path().string());
+                continue;
+            }
+            const std::string filename = entry.path().filename().string();
+            if (entry.path().extension() == ".log" &&
+                filename.compare(0, expected_prefix.size(), expected_prefix) == 0)
+            {
+                std::error_code ec;
+                auto mtime = entry.last_write_time(ec);
+                log_files.push_back({entry.path(), mtime});
             }
         }
 
-        std::sort(log_files.begin(), log_files.end(), std::greater<>());
+        std::sort(log_files.begin(), log_files.end(), [](const LogFileEntry& a, const LogFileEntry& b) {
+            if (a.mtime != b.mtime)
+            {
+                return a.mtime > b.mtime;
+            }
+            return a.path.filename().string() > b.path.filename().string();
+        });
 
-        for (size_t i = max_files_; i < log_files.size(); ++i)
+        for (size_t i = static_cast<size_t>(max_files_); i < log_files.size(); ++i)
         {
-            std::filesystem::remove(log_files[i]);
+            std::error_code ec;
+            std::filesystem::remove(log_files[i].path, ec);
         }
     }
     catch (const std::exception& e)
